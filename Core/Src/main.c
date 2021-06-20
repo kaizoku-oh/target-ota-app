@@ -19,10 +19,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,7 +34,16 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define OTA_RX_BUFFER_SIZE 128
+#define OTA_RX_BUFFER_SIZE          128
+#define OTA_MSG_FRAME_DETECTED      0x01
+
+/* TODO */
+#define OTA_FRAME_ACK_BYTE          0x01
+#define OTA_FRAME_ERR_BYTE          0x02
+#define OTA_FRAME_START_BYTE        0x03
+#define OTA_FRAME_END_BYTE          0x04
+#define OTA_FRAME_BEGIN_OTA_BYTE    0x05
+#define OTA_FRAME_FINISHED_OTA_BYTE 0x06
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -46,6 +57,8 @@ UART_HandleTypeDef otaUartHandle;
 
 SPI_HandleTypeDef extFlashSpiHandle;
 
+osThreadId otaTaskHandle;
+osMessageQId otaQueueHandle;
 /* USER CODE BEGIN PV */
 uint8_t otaRxBuffer[OTA_RX_BUFFER_SIZE];
 uint8_t otaRxByte;
@@ -58,6 +71,8 @@ static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_UART4_Init(void);
 static void MX_SPI1_Init(void);
+void StartOtaTask(void const * argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -112,12 +127,44 @@ int main(void)
   HAL_UART_Receive_IT(&otaUartHandle, &otaRxByte, 1);
   /* USER CODE END 2 */
 
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* definition and creation of otaQueue */
+  osMessageQDef(otaQueue, 8, uint8_t);
+  otaQueueHandle = osMessageCreate(osMessageQ(otaQueue), NULL);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of otaTask */
+  osThreadDef(otaTask, StartOtaTask, osPriorityNormal, 0, 128);
+  otaTaskHandle = osThreadCreate(osThread(otaTask), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    printf("Hello world!\r\n");
-    HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -343,6 +390,38 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
+  * @brief  Detect an OTA frame
+  * @param  None
+  * @retval true if detected an ota frame else false
+  */
+bool otaFrameDetected(void)
+{
+  bool result;
+
+  result = false;
+  if(otaRxIndex == OTA_RX_BUFFER_SIZE)
+  {
+    otaRxIndex = 0;
+  }
+  otaRxBuffer[otaRxIndex] = otaRxByte;
+  otaRxIndex++;
+  /* TODO: Process every incoming byte from UART and try to make sense of it */
+  return result;
+}
+
+/**
+  * @brief  Process frame
+  * @param  None
+  * @retval None
+  */
+void otaProcessFrame(void)
+{
+  /* TODO: 1. Parse frame with frame length
+           2. Take action accordingly
+   */
+}
+
+/**
   * @brief  Rx Transfer completed callback.
   * @param  huart UART handle.
   * @retval None
@@ -351,15 +430,71 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if(huart->Instance == UART4)
   {
-    if(otaRxIndex == OTA_RX_BUFFER_SIZE)
+    if(otaFrameDetected())
     {
-      otaRxIndex = 0;
+      osMessagePut(otaQueueHandle, (uint32_t)OTA_MSG_FRAME_DETECTED, osWaitForever);
     }
-    otaRxBuffer[otaRxIndex] = otaRxByte;
-    otaRxIndex++;
   }
 }
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartOtaTask */
+/**
+  * @brief  Function implementing the otaTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartOtaTask */
+void StartOtaTask(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  osEvent event;
+  uint32_t *message;
+
+  /* Infinite loop */
+  for(;;)
+  {
+    event = osMessageGet(otaQueueHandle, osWaitForever);
+    if(event.status == osEventMessage)
+    {
+      message = event.value.p;
+      switch(*message)
+      {
+      case OTA_MSG_FRAME_DETECTED:
+        printf("New frame detected!\r\n");
+        printf("Processing frame...\r\n");
+        otaProcessFrame();
+        break;
+      default:
+        printf("Thread received an unknown message\r\n");
+        break;
+      }
+    }
+  }
+  /* USER CODE END 5 */
+}
+
+ /**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM2 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if(htim->Instance == TIM2)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
@@ -370,7 +505,7 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
+  while(1)
   {
   }
   /* USER CODE END Error_Handler_Debug */

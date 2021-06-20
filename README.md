@@ -11,10 +11,10 @@
   | err |
 ```
 ```
-  | start OTA |
+  | begin_ota |
 ```
 ```
-  | OTA complete |
+  | finished_ota |
 ```
 
 ### Frames sizes:
@@ -24,7 +24,7 @@
 
 * **start**:  1 byte
 * **length**: 1 byte
-* **data**:   \<length\> byte
+* **data**:   \<length\> byte (max: 64 bytes)
 * **end**:    1 byte
 
 
@@ -42,23 +42,23 @@
 
 
 ```
-| start OTA |
+| begin_ota |
 ```
 
-* **start OTA**: ? byte
+* **begin_ota**: 1 byte
 
 ```
-| OTA complete |
+| finished_ota |
 ```
 
-* **OTA complete**: 1 byte
+* **finished_ota**: 1 byte
 
 ### Communication flow:
 ```
  ______                                     ________ 
 | Host |                                   | Target |
 |______|                                   |________|
-    |             | start OTA |                 |    
+    |             | begin_ota |                 |    
     |       ------------------------->          |    
     |                                           |    
     |                | ack |                    |    
@@ -73,7 +73,7 @@
     |                   .                       |    
     |                   .                       |    
     |                   .                       |    
-    |            | OTA complete |               |    
+    |            | finished_ota |               |    
     |       <------------------------           |    
     |                                           |    
     |                                           |    
