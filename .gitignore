@@ -42,6 +42,14 @@
 *.idb
 *.pdb
 
+# IDE specific files
+EWARM/settings
+EWARM/*.dep
+EWARM/*.ewt
+EWARM/target-ota-app
+*.vscode
+*.code-workspace
+
 # Kernel Module Compile Results
 *.mod*
 *.cmd
