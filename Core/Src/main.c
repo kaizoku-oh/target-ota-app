@@ -29,7 +29,13 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct
+{
+  uint8_t start;
+  uint8_t length;
+  uint8_t data[64];
+  uint8_t end;
+}ota_data_frame_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -63,6 +69,8 @@ osMessageQId otaQueueHandle;
 uint8_t otaRxBuffer[OTA_RX_BUFFER_SIZE];
 uint8_t otaRxByte;
 volatile uint8_t otaRxIndex;
+volatile uint8_t dataIndex;
+ota_data_frame_t dataFrame;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -399,13 +407,51 @@ bool otaFrameDetected(void)
   bool result;
 
   result = false;
+  /* Reset buffer when full */
   if(otaRxIndex == OTA_RX_BUFFER_SIZE)
   {
     otaRxIndex = 0;
   }
+  /* Store received byte in buffer */
   otaRxBuffer[otaRxIndex] = otaRxByte;
   otaRxIndex++;
-  /* TODO: Process every incoming byte from UART and try to make sense of it */
+  /* Detect state */
+  if(otaRxByte == OTA_FRAME_START_BYTE)
+  {
+    state = STATE_RECEIVING_DATA_FRAME;
+  }
+  switch(state)
+  {
+  /* Fill data frame */
+  case STATE_RECEIVING_DATA_FRAME:
+    if(otaRxIndex == 1)
+    {
+      dataFrame.start = otaRxByte;
+    }
+    else if(otaRxIndex == 2)
+    {
+      dataFrame.length = otaRxByte;
+    }
+    else if(otaRxIndex > 2) && (otaRxIndex <= dataFrame.length + 2)
+    {
+      dataFrame.data[dataIndex] = otaRxByte;
+      dataIndex++;
+    }
+    else if(otaRxIndex == sizeof(dataFrame.start) + sizeof(dataFrame.length) + dataFrame.length)
+    {
+      dataFrame.end = otaRxByte;
+      otaRxIndex = 0;
+      dataIndex = 0;
+      result = true;
+    }
+    break;
+   /* Fill begin_ota frame */
+   case STATE_RECEIVING_BEGIN_OTA:
+     /* TODO */
+     break
+   default:
+     break;
+  }
   return result;
 }
 
