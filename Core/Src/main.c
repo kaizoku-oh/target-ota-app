@@ -36,20 +36,33 @@ typedef struct
   uint8_t data[64];
   uint8_t end;
 }ota_data_frame_t;
+
+typedef enum
+{
+  OTA_ERR_FRAME = 0,
+  OTA_BEGIN_FRAME,
+  OTA_DATA_FRAME,
+}ota_frame_t;
+
+/* TODO: Add begin frame type */
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define OTA_RX_BUFFER_SIZE          128
-#define OTA_MSG_FRAME_DETECTED      0x01
 
-/* TODO */
+/* Frame bytes */
 #define OTA_FRAME_ACK_BYTE          0x01
+
 #define OTA_FRAME_ERR_BYTE          0x02
-#define OTA_FRAME_START_BYTE        0x03
-#define OTA_FRAME_END_BYTE          0x04
-#define OTA_FRAME_BEGIN_OTA_BYTE    0x05
-#define OTA_FRAME_FINISHED_OTA_BYTE 0x06
+
+#define OTA_FRAME_DATA_START_BYTE   0x03
+#define OTA_FRAME_DATA_END_BYTE     0x04
+
+#define OTA_FRAME_BEGIN_START_BYTE  0x05
+#define OTA_FRAME_BEGIN_END_BYTE    0x06
+
+#define OTA_FRAME_FINISHED_BYTE     0x07
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -71,6 +84,7 @@ uint8_t otaRxByte;
 volatile uint8_t otaRxIndex;
 volatile uint8_t dataIndex;
 ota_data_frame_t dataFrame;
+/* TODO: Add begin frame */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -398,15 +412,15 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
-  * @brief  Detect an OTA frame
+  * @brief  Detect an OTA frame type
   * @param  None
-  * @retval true if detected an ota frame else false
+  * @retval type of frame
   */
-bool otaFrameDetected(void)
+ota_frame_t otaFrameDetect(void)
 {
-  bool result;
+  ota_frame_t result;
 
-  result = false;
+  result = OTA_ERR_FRAME;
   /* Reset buffer when full */
   if(otaRxIndex == OTA_RX_BUFFER_SIZE)
   {
@@ -442,7 +456,7 @@ bool otaFrameDetected(void)
       dataFrame.end = otaRxByte;
       otaRxIndex = 0;
       dataIndex = 0;
-      result = true;
+      result = OTA_DATA_FRAME;
     }
     break;
    /* Fill begin_ota frame */
@@ -462,8 +476,10 @@ bool otaFrameDetected(void)
   */
 void otaProcessFrame(void)
 {
-  /* TODO: 1. Parse frame with frame length
-           2. Take action accordingly
+  /* TODO: 1. Validate frame according to its type
+           2. if valid --> write data to flash --> send ack back to host
+           3. if not valid --> send err to host
+           4. if failed to write data to flash --> send err to host
    */
 }
 
@@ -474,12 +490,16 @@ void otaProcessFrame(void)
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
+  ota_frame_t frameType;
+
   if(huart->Instance == UART4)
   {
-    if(otaFrameDetected())
+    frameType = otaFrameDetect();
+    if(frameType != OTA_ERR_FRAME)
     {
-      osMessagePut(otaQueueHandle, (uint32_t)OTA_MSG_FRAME_DETECTED, osWaitForever);
+      osMessagePut(otaQueueHandle, (uint32_t)frameType, osWaitForever);
     }
+    HAL_UART_Receive_IT(&otaUartHandle, &otaRxByte, 1);
   }
 }
 /* USER CODE END 4 */
@@ -506,8 +526,13 @@ void StartOtaTask(void const * argument)
       message = event.value.v;
       switch(message)
       {
-      case OTA_MSG_FRAME_DETECTED:
-        printf("New frame detected!\r\n");
+      case OTA_BEGIN_FRAME:
+        printf("New begin frame detected!\r\n");
+        printf("Processing frame...\r\n");
+        otaProcessFrame();
+        break;
+      case OTA_DATA_FRAME:
+        printf("New data frame detected!\r\n");
         printf("Processing frame...\r\n");
         otaProcessFrame();
         break;
