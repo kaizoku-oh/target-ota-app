@@ -47,7 +47,7 @@ Finish frame:
 
 
 ```
-  | start | file size | end |
+  | begin_start | file size | begin_end |
 ```
 
 * **begin_start**: 1 byte
