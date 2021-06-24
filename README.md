@@ -1,31 +1,36 @@
 # target-ota-app
 
 ### Frame types:
+Data frame:
 ```
-  | start | length | data | end |
+  | data_start | length | data | data_end |
 ```
+Acknowledgment frame:
 ```
   | ack |
 ```
+Error frame:
 ```
   | err |
 ```
+Begin frame:
 ```
-  | begin_ota |
+  | begin_start | file size | begin_end |
 ```
+Finish frame:
 ```
   | finished_ota |
 ```
 
 ### Frames sizes:
 ```
-| start | length | data | end |
+| data_start | length | data | data_end |
 ```
 
-* **start**:  1 byte
-* **length**: 1 byte
-* **data**:   \<length\> byte (max: 64 bytes)
-* **end**:    1 byte
+* **data_start**:  1 byte
+* **length**:      1 byte
+* **data**:        \<length\> byte (max: 64 bytes)
+* **data_end**:    1 byte
 
 
 ```
@@ -42,10 +47,12 @@
 
 
 ```
-| begin_ota |
+  | start | file size | end |
 ```
 
-* **begin_ota**: 1 byte
+* **begin_start**: 1 byte
+* **file_size**:   2 byte
+* **begin_end**:   1 byte
 
 ```
 | finished_ota |
@@ -55,26 +62,26 @@
 
 ### Communication flow:
 ```
- ______                                     ________ 
-| Host |                                   | Target |
-|______|                                   |________|
-    |             | begin_ota |                 |    
-    |       ------------------------->          |    
-    |                                           |    
-    |                | ack |                    |    
-    |       <------------------------           |    
-    |                                           |    
-    |                                           |    
-    |    | start | length | data | end |        |    
-    |       ------------------------>           |    
-    |                                           |    
-    |                | ack |                    |    
-    |       <------------------------           |    
-    |                   .                       |    
-    |                   .                       |    
-    |                   .                       |    
-    |            | finished_ota |               |    
-    |       <------------------------           |    
-    |                                           |    
-    |                                           |    
+ ______                                                ________ 
+| Host |                                              | Target |
+|______|                                              |________|
+    |       | begin_start | file size | begin_end |        |    
+    |             ------------------------->               |    
+    |                                                      |    
+    |                      | ack |                         |    
+    |             <------------------------                |    
+    |                                                      |    
+    |                                                      |    
+    |     | data_start | length | data | data_end |        |    
+    |             ------------------------>                |    
+    |                                                      |    
+    |                      | ack |                         |    
+    |             <------------------------                |    
+    |                         .                            |    
+    |                         .                            |    
+    |                         .                            |    
+    |                  | finished_ota |                    |    
+    |             <------------------------                |    
+    |                                                      |    
+    |                                                      |    
 ```
