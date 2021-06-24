@@ -495,7 +495,7 @@ void StartOtaTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
   osEvent event;
-  uint32_t *message;
+  uint32_t message;
 
   /* Infinite loop */
   for(;;)
@@ -503,8 +503,8 @@ void StartOtaTask(void const * argument)
     event = osMessageGet(otaQueueHandle, osWaitForever);
     if(event.status == osEventMessage)
     {
-      message = event.value.p;
-      switch(*message)
+      message = event.value.v;
+      switch(message)
       {
       case OTA_MSG_FRAME_DETECTED:
         printf("New frame detected!\r\n");
