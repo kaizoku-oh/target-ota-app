@@ -9,14 +9,15 @@
   * <h2><center>&copy; Copyright (c) 2021 STMicroelectronics.
   * All rights reserved.</center></h2>
   *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
+  * This software component is licensed by ST under Ultimate Liberty license
+  * SLA0044, the "License"; You may not use this file except in compliance with
+  * the License. You may obtain a copy of the License at:
+  *                             www.st.com/SLA0044
   *
   ******************************************************************************
   */
 /* USER CODE END Header */
+
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
@@ -25,6 +26,9 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
+#include "hal.h"
+#include "wolfboot/wolfboot.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,6 +39,7 @@ typedef struct
   uint8_t length;
   uint8_t data[64];
   uint8_t end;
+  uint8_t index;
 }ota_data_frame_t;
 
 typedef enum
@@ -43,8 +48,19 @@ typedef enum
   OTA_BEGIN_FRAME,
   OTA_DATA_FRAME,
 }ota_frame_t;
-
-/* TODO: Add begin frame type */
+typedef enum 
+{
+  NOT_RECEIVING =0,
+  STATE_RECEIVING_DATA_FRAME,
+  STATE_RECEIVING_BEGIN_OTA,
+  
+}status;
+typedef struct
+{
+  uint8_t begin_start;
+  uint16_t file_size;
+  uint8_t begin_end;
+}ota_begin_frame_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -71,10 +87,7 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-UART_HandleTypeDef traceUartHandle;
-UART_HandleTypeDef otaUartHandle;
-
-SPI_HandleTypeDef extFlashSpiHandle;
+UART_HandleTypeDef hlpuart1;
 
 osThreadId otaTaskHandle;
 osMessageQId otaQueueHandle;
@@ -84,15 +97,15 @@ uint8_t otaRxByte;
 volatile uint8_t otaRxIndex;
 volatile uint8_t dataIndex;
 ota_data_frame_t dataFrame;
-/* TODO: Add begin frame */
+ota_begin_frame_t beginFrame;
+volatile uint32_t dst=WOLFBOOT_PARTITION_UPDATE_ADDRESS;
+uint8_t writtenLength;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
-static void MX_UART4_Init(void);
-static void MX_SPI1_Init(void);
 void StartOtaTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -101,15 +114,9 @@ void StartOtaTask(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/**
-  * @brief  Overwrite the standard printf function
-  * @param  ch character
-  * @param  stream stream of bytes
-  * @retval sent character
-  */
 int fputc(int ch, FILE* stream)
 {
-  HAL_UART_Transmit(&traceUartHandle, (uint8_t *)&ch, 1, 0xFFFF);
+  HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 0xFFFF);
   return ch;
 }
 /* USER CODE END 0 */
@@ -123,6 +130,7 @@ int main(void)
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
+  
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -143,10 +151,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_LPUART1_UART_Init();
-  MX_UART4_Init();
-  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_UART_Receive_IT(&otaUartHandle, &otaRxByte, 1);
+  HAL_UART_Receive_IT(&hlpuart1, &otaRxByte, 1);
+//__HAL_UART_ENABLE_IT(&hlpuart1, UART_IT_RXNE);
+
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -181,8 +189,9 @@ int main(void)
 
   /* Start scheduler */
   osKernelStart();
-
+  
   /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -204,8 +213,13 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
+  /** Configure the main internal regulator output voltage 
+  */
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Initializes the CPU, AHB and APB busses clocks 
   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
@@ -220,7 +234,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  /** Initializes the CPU, AHB and APB buses clocks
+  /** Initializes the CPU, AHB and APB busses clocks 
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
@@ -229,20 +243,13 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_UART4|RCC_PERIPHCLK_LPUART1;
-  PeriphClkInit.Uart4ClockSelection = RCC_UART4CLKSOURCE_PCLK1;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_LPUART1;
   PeriphClkInit.Lpuart1ClockSelection = RCC_LPUART1CLKSOURCE_PCLK1;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure the main internal regulator output voltage
-  */
-  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -263,97 +270,32 @@ static void MX_LPUART1_UART_Init(void)
   /* USER CODE BEGIN LPUART1_Init 1 */
 
   /* USER CODE END LPUART1_Init 1 */
-  traceUartHandle.Instance = LPUART1;
-  traceUartHandle.Init.BaudRate = 115200;
-  traceUartHandle.Init.WordLength = UART_WORDLENGTH_8B;
-  traceUartHandle.Init.StopBits = UART_STOPBITS_1;
-  traceUartHandle.Init.Parity = UART_PARITY_NONE;
-  traceUartHandle.Init.Mode = UART_MODE_TX_RX;
-  traceUartHandle.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  traceUartHandle.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  traceUartHandle.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&traceUartHandle) != HAL_OK)
+  hlpuart1.Instance = LPUART1;
+  hlpuart1.Init.BaudRate = 115200;
+  hlpuart1.Init.WordLength = UART_WORDLENGTH_8B;
+  hlpuart1.Init.StopBits = UART_STOPBITS_1;
+  hlpuart1.Init.Parity = UART_PARITY_NONE;
+  hlpuart1.Init.Mode = UART_MODE_TX_RX;
+  hlpuart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  hlpuart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  hlpuart1.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  hlpuart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  hlpuart1.FifoMode = UART_FIFOMODE_DISABLE;
+  if (HAL_UART_Init(&hlpuart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&hlpuart1, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&hlpuart1, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
   {
     Error_Handler();
   }
   /* USER CODE BEGIN LPUART1_Init 2 */
 
   /* USER CODE END LPUART1_Init 2 */
-
-}
-
-/**
-  * @brief UART4 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_UART4_Init(void)
-{
-
-  /* USER CODE BEGIN UART4_Init 0 */
-
-  /* USER CODE END UART4_Init 0 */
-
-  /* USER CODE BEGIN UART4_Init 1 */
-
-  /* USER CODE END UART4_Init 1 */
-  otaUartHandle.Instance = UART4;
-  otaUartHandle.Init.BaudRate = 115200;
-  otaUartHandle.Init.WordLength = UART_WORDLENGTH_8B;
-  otaUartHandle.Init.StopBits = UART_STOPBITS_1;
-  otaUartHandle.Init.Parity = UART_PARITY_NONE;
-  otaUartHandle.Init.Mode = UART_MODE_TX_RX;
-  otaUartHandle.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  otaUartHandle.Init.OverSampling = UART_OVERSAMPLING_16;
-  otaUartHandle.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  otaUartHandle.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&otaUartHandle) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN UART4_Init 2 */
-
-  /* USER CODE END UART4_Init 2 */
-
-}
-
-/**
-  * @brief SPI1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_SPI1_Init(void)
-{
-
-  /* USER CODE BEGIN SPI1_Init 0 */
-
-  /* USER CODE END SPI1_Init 0 */
-
-  /* USER CODE BEGIN SPI1_Init 1 */
-
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  extFlashSpiHandle.Instance = SPI1;
-  extFlashSpiHandle.Init.Mode = SPI_MODE_MASTER;
-  extFlashSpiHandle.Init.Direction = SPI_DIRECTION_2LINES;
-  extFlashSpiHandle.Init.DataSize = SPI_DATASIZE_8BIT;
-  extFlashSpiHandle.Init.CLKPolarity = SPI_POLARITY_LOW;
-  extFlashSpiHandle.Init.CLKPhase = SPI_PHASE_1EDGE;
-  extFlashSpiHandle.Init.NSS = SPI_NSS_SOFT;
-  extFlashSpiHandle.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
-  extFlashSpiHandle.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  extFlashSpiHandle.Init.TIMode = SPI_TIMODE_DISABLE;
-  extFlashSpiHandle.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  extFlashSpiHandle.Init.CRCPolynomial = 7;
-  extFlashSpiHandle.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  extFlashSpiHandle.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&extFlashSpiHandle) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI1_Init 2 */
-
-  /* USER CODE END SPI1_Init 2 */
 
 }
 
@@ -367,59 +309,28 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOG_CLK_ENABLE();
+  HAL_PWREx_EnableVddIO2();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(EXTERNAL_FLASH_SPI_SS_GPIO_Port, EXTERNAL_FLASH_SPI_SS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14|GPIO_PIN_7, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LED_1_RED_Pin|LED_1_GREEN_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, LED_2_RED_Pin|LED_2_GREEN_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : EXTERNAL_FLASH_SPI_SS_Pin */
-  GPIO_InitStruct.Pin = EXTERNAL_FLASH_SPI_SS_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(EXTERNAL_FLASH_SPI_SS_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : BUTTON_2_Pin BUTTON_1_Pin */
-  GPIO_InitStruct.Pin = BUTTON_2_Pin|BUTTON_1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : LED_1_RED_Pin LED_1_GREEN_Pin */
-  GPIO_InitStruct.Pin = LED_1_RED_Pin|LED_1_GREEN_Pin;
+  /*Configure GPIO pins : PB14 PB7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : LED_2_RED_Pin LED_2_GREEN_Pin */
-  GPIO_InitStruct.Pin = LED_2_RED_Pin|LED_2_GREEN_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
 }
 
 /* USER CODE BEGIN 4 */
-/**
-  * @brief  Detect an OTA frame type
-  * @param  None
-  * @retval type of frame
-  */
 ota_frame_t otaFrameDetect(void)
 {
   ota_frame_t result;
-
+  status state=NOT_RECEIVING;
   result = OTA_ERR_FRAME;
   /* Reset buffer when full */
   if(otaRxIndex == OTA_RX_BUFFER_SIZE)
@@ -430,9 +341,13 @@ ota_frame_t otaFrameDetect(void)
   otaRxBuffer[otaRxIndex] = otaRxByte;
   otaRxIndex++;
   /* Detect state */
-  if(otaRxByte == OTA_FRAME_START_BYTE)
+  if(otaRxBuffer[0] == OTA_FRAME_DATA_START_BYTE)
   {
     state = STATE_RECEIVING_DATA_FRAME;
+  }
+   if(otaRxBuffer[0] == OTA_FRAME_BEGIN_START_BYTE)
+  {
+    state = STATE_RECEIVING_BEGIN_OTA;
   }
   switch(state)
   {
@@ -446,42 +361,153 @@ ota_frame_t otaFrameDetect(void)
     {
       dataFrame.length = otaRxByte;
     }
-    else if(otaRxIndex > 2) && (otaRxIndex <= dataFrame.length + 2)
+    else if ((otaRxIndex > 2) && (otaRxIndex <= dataFrame.length + 2))
     {
       dataFrame.data[dataIndex] = otaRxByte;
       dataIndex++;
     }
-    else if(otaRxIndex == sizeof(dataFrame.start) + sizeof(dataFrame.length) + dataFrame.length)
+    else if(otaRxIndex == sizeof(dataFrame.start) + sizeof(dataFrame.length) + dataFrame.length+1)
     {
       dataFrame.end = otaRxByte;
+      dataFrame.index=dataIndex;
       otaRxIndex = 0;
       dataIndex = 0;
+      memset(otaRxBuffer, 0, OTA_RX_BUFFER_SIZE);
+
       result = OTA_DATA_FRAME;
     }
     break;
    /* Fill begin_ota frame */
    case STATE_RECEIVING_BEGIN_OTA:
      /* TODO */
-     break
+      if(otaRxIndex == 1)
+    {
+      beginFrame.begin_start = otaRxByte;
+    }
+    else if (otaRxIndex ==2)
+    {
+      beginFrame.file_size = ((uint16_t)otaRxBuffer[1] << 8);
+    }
+    else if(otaRxIndex ==3)
+    {
+      beginFrame.file_size |= otaRxBuffer[2];
+    }
+    else if(otaRxIndex == 4)
+    {
+      beginFrame.begin_end = otaRxByte;
+      otaRxIndex = 0;
+      memset(otaRxBuffer, 0, OTA_RX_BUFFER_SIZE);
+      result = OTA_BEGIN_FRAME;
+    }
+     break;
    default:
      break;
   }
   return result;
 }
 
+
 /**
   * @brief  Process frame
   * @param  None
   * @retval None
   */
-void otaProcessFrame(void)
+void otaProcessFrame(uint32_t message)
 {
   /* TODO: 1. Validate frame according to its type
            2. if valid --> write data to flash --> send ack back to host
            3. if not valid --> send err to host
            4. if failed to write data to flash --> send err to host
    */
+ 
+  uint8_t Tx=0;
+  uint8_t writtenLength;
+  switch(message)
+  {
+  case OTA_BEGIN_FRAME:
+  
+    if (beginFrame.begin_end ==OTA_FRAME_BEGIN_END_BYTE)
+    {
+    /*Send ACK to host */ 
+     Tx=OTA_FRAME_ACK_BYTE;
+     
+     HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+    }
+    else 
+    {
+     Tx=OTA_FRAME_ERR_BYTE;
+     
+     HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+     
+    beginFrame.begin_start=0x00;
+     beginFrame.file_size= 0x0000;
+     beginFrame.begin_end = 0x00;
+
+    }
+    break;
+    case OTA_DATA_FRAME:
+      
+      if ((dataFrame.end ==OTA_FRAME_DATA_END_BYTE)&& (dataFrame.length==dataFrame.index))
+        {
+         
+          
+            if ((dst % WOLFBOOT_SECTOR_SIZE) == 0) 
+            {
+            hal_flash_erase(dst, WOLFBOOT_SECTOR_SIZE);
+            }
+            /* when an address of the flash contains a value different from '0xFFFF FFFF*/
+            
+            
+           // if (dataFrame.length
+          /* frame is valid */ 
+            if (hal_flash_write(dst, (uint8_t*)&dataFrame.data, (int)dataFrame.length)==0)
+              {
+//                if (dataFrame.length % 8!=0)
+//                  dst+=8;
+//                else
+            dst+=dataFrame.length;
+            writtenLength=dst-WOLFBOOT_PARTITION_UPDATE_ADDRESS;
+            Tx=OTA_FRAME_ACK_BYTE;
+     
+            HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+            dataFrame.start=0;
+            memset(dataFrame.data, 0, dataFrame.length);
+            dataFrame.end=0;
+            if (writtenLength==beginFrame.file_size)
+            {
+              Tx=OTA_FRAME_FINISHED_BYTE;
+     
+            HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+            }
+              }
+            
+            
+            else 
+              {
+            /* couldn't write to flash*/
+            Tx=OTA_FRAME_ERR_BYTE;
+     
+            HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+              }
+          }
+       else if (dataFrame.length>0x40 ) /* data length is bigger than 64 bytes*/ 
+        {
+          Tx=OTA_FRAME_ERR_BYTE;
+     
+          HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+        }
+      else 
+      { /* invalid frame*/ 
+        Tx=OTA_FRAME_ERR_BYTE;
+     
+        HAL_UART_Transmit(&hlpuart1,(uint8_t *)&Tx ,1,HAL_MAX_DELAY);
+      }
+          break;
+    default:
+    break;
+ }
 }
+
 
 /**
   * @brief  Rx Transfer completed callback.
@@ -492,14 +518,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   ota_frame_t frameType;
 
-  if(huart->Instance == UART4)
+  if(huart->Instance == LPUART1)
   {
+     
     frameType = otaFrameDetect();
     if(frameType != OTA_ERR_FRAME)
     {
       osMessagePut(otaQueueHandle, (uint32_t)frameType, osWaitForever);
     }
-    HAL_UART_Receive_IT(&otaUartHandle, &otaRxByte, 1);
+    HAL_UART_Receive_IT(&hlpuart1, &otaRxByte, 1);
   }
 }
 /* USER CODE END 4 */
@@ -507,7 +534,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /* USER CODE BEGIN Header_StartOtaTask */
 /**
   * @brief  Function implementing the otaTask thread.
-  * @param  argument: Not used
+  * @param  argument: Not used 
   * @retval None
   */
 /* USER CODE END Header_StartOtaTask */
@@ -516,7 +543,6 @@ void StartOtaTask(void const * argument)
   /* USER CODE BEGIN 5 */
   osEvent event;
   uint32_t message;
-
   /* Infinite loop */
   for(;;)
   {
@@ -527,14 +553,14 @@ void StartOtaTask(void const * argument)
       switch(message)
       {
       case OTA_BEGIN_FRAME:
-        printf("New begin frame detected!\r\n");
-        printf("Processing frame...\r\n");
-        otaProcessFrame();
+        //printf("New begin frame detected!\r\n");
+        //printf("Processing frame...\r\n");
+        otaProcessFrame(OTA_BEGIN_FRAME);
         break;
       case OTA_DATA_FRAME:
-        printf("New data frame detected!\r\n");
-        printf("Processing frame...\r\n");
-        otaProcessFrame();
+        //printf("New data frame detected!\r\n");
+        //printf("Processing frame...\r\n");
+        otaProcessFrame(OTA_DATA_FRAME);
         break;
       default:
         printf("Thread received an unknown message\r\n");
@@ -542,10 +568,10 @@ void StartOtaTask(void const * argument)
       }
     }
   }
-  /* USER CODE END 5 */
+  /* USER CODE END 5 */ 
 }
 
- /**
+/**
   * @brief  Period elapsed callback in non blocking mode
   * @note   This function is called  when TIM2 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
@@ -558,8 +584,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if(htim->Instance == TIM2)
-  {
+  if (htim->Instance == TIM2) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
@@ -575,10 +600,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while(1)
-  {
-  }
+
   /* USER CODE END Error_Handler_Debug */
 }
 
@@ -590,11 +612,11 @@ void Error_Handler(void)
   * @param  line: assert_param error line source number
   * @retval None
   */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+void assert_failed(char *file, uint32_t line)
+{ 
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+     tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
